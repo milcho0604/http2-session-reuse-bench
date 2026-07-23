@@ -20,6 +20,18 @@ function request(session, body) {
   });
 }
 
+test('listen() rejects loudly when the port cannot be bound', async () => {
+  // Bind a port, then try to bind the same port again — the second listen must
+  // reject (EADDRINUSE), not silently do nothing and let the process exit 0.
+  const first = createServer();
+  const { port } = await first.listen();
+
+  const second = createServer();
+  await assert.rejects(() => second.listen(port), /EADDRINUSE/);
+
+  await first.close();
+});
+
 test('server counts one session per connection and one request per stream', async () => {
   const { cert: ca } = ensureCert();
   const { stats, listen, close } = createServer();

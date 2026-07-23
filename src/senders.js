@@ -70,6 +70,12 @@ async function runBatch(session, perBatch, body) {
   return Promise.all(jobs);
 }
 
+// Close and wait for the close to complete, so teardown cost stays inside the
+// strategy that caused it and cannot bleed into the next measurement.
+function closeSession(session) {
+  return new Promise(resolve => session.close(resolve));
+}
+
 async function perCallSession(url, ca, { batches, perBatch, body, connectDelayMs = 0 }) {
   const latencies = [];
   const startWall = performance.now();
@@ -77,7 +83,7 @@ async function perCallSession(url, ca, { batches, perBatch, body, connectDelayMs
     const session = await connect(url, ca, connectDelayMs);
     const batchLatencies = await runBatch(session, perBatch, body);
     latencies.push(...batchLatencies);
-    session.close();
+    await closeSession(session);
   }
   return { latencies, wallMs: performance.now() - startWall };
 }
@@ -90,7 +96,7 @@ async function sharedSession(url, ca, { batches, perBatch, body, connectDelayMs 
     const batchLatencies = await runBatch(session, perBatch, body);
     latencies.push(...batchLatencies);
   }
-  session.close();
+  await closeSession(session);
   return { latencies, wallMs: performance.now() - startWall };
 }
 

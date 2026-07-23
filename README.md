@@ -10,10 +10,11 @@ call, but each call establishes its **own** HTTP/2 session, so there is no
 session reuse *across* calls. Under bursty, high-volume load this puts a
 TLS + HTTP/2 handshake on the hot path of every batch.
 
-> This repository does **not** contain or depend on any proprietary code. It is
-> a generic, from-scratch demonstration using only Node.js built-ins
-> (`http2`, `perf_hooks`, `crypto`). It is not affiliated with or endorsed by
-> Firebase/Google.
+> This repository does **not** contain or depend on any proprietary code. The
+> core benchmark is a generic, from-scratch demonstration using only Node.js
+> built-ins (`http2`, `perf_hooks`, `crypto`); the level-2 check additionally
+> installs `firebase-admin` as a devDependency to exercise the real SDK. It is
+> not affiliated with or endorsed by Firebase/Google.
 
 ## What it does
 
@@ -26,7 +27,7 @@ TLS + HTTP/2 handshake on the hot path of every batch.
 - Reports sessions opened, wall-clock time, throughput, and latency
   percentiles.
 
-The session count is the key, unarguable fact: the per-call strategy opens one
+The session count is the key, structural fact: the per-call strategy opens one
 connection **per batch**, while the shared strategy stays at **1** no matter how
 many requests are sent.
 
@@ -34,14 +35,15 @@ many requests are sent.
 
 Measured on Node.js v25 (loopback). Numbers vary by machine; run it yourself.
 
-**Pure loopback** (handshake cost only, no modeled network latency):
+**Pure loopback** (handshake cost only, no modeled network latency; shared runs
+first, so warmup — if any — favors per-call):
 
-| strategy         | sessions | requests | wall (ms) | req/s   | p99 (ms) |
-|------------------|----------|----------|-----------|---------|----------|
-| per-call session | 200      | 10,000   | 524       | 19,094  | 2.37     |
-| shared session   | 1        | 10,000   | 178       | 56,322  | 2.70     |
+| strategy         | sessions | requests | wall (ms) | req/s   |
+|------------------|----------|----------|-----------|---------|
+| per-call session | 200      | 10,000   | ~480      | ~20,800 |
+| shared session   | 1        | 10,000   | ~260      | ~38,100 |
 
-→ **~3x faster**, 200x fewer connections.
+→ **~1.8x faster**, 200x fewer connections.
 
 **With a modeled per-connection cost** (`CONNECT_DELAY_MS=15`): this adds a fixed
 15 ms delay to every new connection to stand in for the round-trips a real
@@ -50,8 +52,8 @@ handshake** — loopback handshakes are sub-millisecond.
 
 | strategy         | sessions | requests | wall (ms) | req/s   |
 |------------------|----------|----------|-----------|---------|
-| per-call session | 200      | 10,000   | ~3,800    | ~2,600  |
-| shared session   | 1        | 10,000   | ~180      | ~55,000 |
+| per-call session | 200      | 10,000   | ~3,840    | ~2,600  |
+| shared session   | 1        | 10,000   | ~270      | ~37,000 |
 
 Be explicit about what this shows: because the per-call strategy pays the delay
 once per batch and the shared strategy pays it once total, the gap is
@@ -76,7 +78,7 @@ It stays fully offline and credential-free:
   a static token, so no OAuth or network call ever happens.
 
 ```bash
-npm install            # pulls firebase-admin (devDependency, level 2 only)
+npm install            # pulls firebase-admin (devDependency, level 2 only; needs Node >= 22)
 CALLS=20 PER_CALL=50 node scripts/level2-sdk.js
 ```
 
@@ -116,7 +118,8 @@ node bench.js
 CONNECT_DELAY_MS=15 BATCHES=200 PER_BATCH=50 node bench.js
 ```
 
-No install step; Node.js >= 18 only. A throwaway self-signed cert is generated
+No install step; Node.js >= 18 for the core benchmark (the level-2 SDK check
+needs Node >= 22, per firebase-admin's engines). A throwaway self-signed cert is generated
 at runtime under `.certs/` (gitignored).
 
 ### Knobs
@@ -132,7 +135,9 @@ at runtime under `.certs/` (gitignored).
 
 - Both strategies send the **same** number of requests with the **same**
   in-batch concurrency against the **same** server.
-- The only variable is session lifetime.
+- The intended variable is session lifetime. The shared strategy runs *first*,
+  so any JIT/TLS warmup from a prior run benefits the per-call strategy — i.e.
+  the ordering bias, if any, works *against* the conclusion drawn here.
 - `CONNECT_DELAY_MS` is applied to **every** new connection, so the shared
   strategy pays it once and the per-call strategy pays it per batch — which is
   precisely the difference under test. With `CONNECT_DELAY_MS=0` the result is a
@@ -156,7 +161,7 @@ The suite (`node:test`, no framework) asserts the load-bearing claims directly:
   exactly one for the whole run.
 - The real `firebase-admin` `sendEach()` opens one session per call, and
   multiplexes every message within a call onto that one session.
-- A non-2xx response is counted as a failure, never a success.
+- Anything other than HTTP 200 is treated as a failure, never a success.
 - Percentiles use nearest-rank and never over-index.
 
 The level-2 test is skipped (not failed) if `firebase-admin` isn't installed.

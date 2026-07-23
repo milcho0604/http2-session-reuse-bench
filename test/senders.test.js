@@ -34,6 +34,8 @@ test('sharedSession opens exactly one session for the whole run', async () => {
 
   assert.equal(stats.sessions - before, 1); // 1 session, no matter how many batches
   assert.equal(r.latencies.length, WORKLOAD.batches * WORKLOAD.perBatch); // same work
+  // the server must have SEEN every request too, not just the client claiming so
+  assert.equal(stats.requests, WORKLOAD.batches * WORKLOAD.perBatch);
 
   await close();
 });

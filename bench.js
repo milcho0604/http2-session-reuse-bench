@@ -68,13 +68,17 @@ async function main() {
     `| server delay ${PROCESSING_MS}ms | connect delay ${CONNECT_DELAY_MS}ms\n`,
   );
 
+  // Run the SHARED strategy first, per-call second. The second run benefits
+  // from any JIT/TLS warmup, so this ordering is conservative: whatever warmup
+  // advantage exists goes to the per-call strategy — the one this benchmark
+  // shows to be slower.
   const before1 = stats.sessions;
-  const r1 = await perCallSession(url, ca, opts);
-  const perCall = summarize('per-call session', r1, stats.sessions - before1);
+  const r1 = await sharedSession(url, ca, opts);
+  const shared = summarize('shared session', r1, stats.sessions - before1);
 
   const before2 = stats.sessions;
-  const r2 = await sharedSession(url, ca, opts);
-  const shared = summarize('shared session', r2, stats.sessions - before2);
+  const r2 = await perCallSession(url, ca, opts);
+  const perCall = summarize('per-call session', r2, stats.sessions - before2);
 
   printTable([perCall, shared]);
 

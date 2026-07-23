@@ -31,9 +31,13 @@ function createServer({ processingMs = 0 } = {}) {
       stats.maxConcurrentStreams = liveStreams;
     }
     stream.on('error', () => {});
+    // Decrement on 'close' (fires for success AND abort paths), so an aborted
+    // stream can never leak a live-stream slot and skew maxConcurrentStreams.
+    stream.once('close', () => {
+      liveStreams -= 1;
+    });
 
     const respond = () => {
-      liveStreams -= 1;
       if (stream.destroyed) return;
       stream.respond({
         ':status': 200,
@@ -53,11 +57,16 @@ function createServer({ processingMs = 0 } = {}) {
     });
   });
 
-  server.on('error', () => {});
-
-  function listen() {
-    return new Promise(resolve => {
-      server.listen(0, '127.0.0.1', () => {
+  function listen(portToBind = 0) {
+    return new Promise((resolve, reject) => {
+      // Fail loudly if the port cannot be bound (e.g. a sandbox that forbids
+      // listening). Swallowing this used to make the whole benchmark exit 0
+      // with no output, which hid the environment problem.
+      const onError = err => reject(err);
+      server.once('error', onError);
+      server.listen(portToBind, '127.0.0.1', () => {
+        server.removeListener('error', onError);
+        server.on('error', () => {}); // post-listen runtime errors: non-fatal
         const { port } = server.address();
         resolve({ port, url: `https://127.0.0.1:${port}` });
       });
