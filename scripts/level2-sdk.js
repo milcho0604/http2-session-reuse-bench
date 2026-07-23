@@ -19,45 +19,45 @@ const http2 = require('http2');
 const { createServer } = require('../src/server');
 const { ensureCert } = require('../src/cert');
 
-const CALLS = intEnv('CALLS', 20); // number of sendEach() invocations
-const PER_CALL = intEnv('PER_CALL', 50); // messages per sendEach()
-
 function intEnv(name, def) {
   const v = process.env[name];
   return v === undefined ? def : parseInt(v, 10);
 }
 
-async function main() {
+// unique firebase app name per run so multiple runs in one process don't collide
+let appSeq = 0;
+
+// The real FCM server tolerates non-canonical HTTP/2 headers that the SDK emits
+// (mixed-case names like `Content-Length`, and a `:scheme` of "https:"). Node's
+// built-in http2 *server* is stricter and rejects them with a PROTOCOL_ERROR
+// before the stream is even delivered. Since our only goal is to observe
+// session lifetime — not to re-test Google's leniency — we canonicalize headers
+// at the transport boundary so the local mock accepts them. This does not touch
+// how many sessions are opened, which is what we measure.
+function canonicalizeHeaders(headers) {
+  const out = {};
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.startsWith(':')) {
+      out[k] = k === ':scheme' ? String(v).replace(/:$/, '') : v;
+    } else {
+      out[k.toLowerCase()] = v;
+    }
+  }
+  return out;
+}
+
+// Runs `calls` sendEach() invocations of `perCall` messages each against a
+// local counting server, and returns what actually happened. Pure enough to
+// unit-test: no process.exit, no console output.
+async function runLevel2({ calls = 20, perCall = 50, processingMs = 0 } = {}) {
   const { cert: ca } = ensureCert();
-  const { stats, listen, close } = createServer({ processingMs: intEnv('PROCESSING_MS', 0) });
+  const { stats, listen, close } = createServer({ processingMs });
   const { port } = await listen();
 
-  // The real FCM server tolerates non-canonical HTTP/2 headers that the SDK
-  // emits (mixed-case names like `Content-Length`, and a `:scheme` of
-  // "https:"). Node's built-in http2 *server* is stricter and rejects them with
-  // a PROTOCOL_ERROR before the stream is even delivered. Since our only goal
-  // is to observe session lifetime — not to re-test Google's leniency — we
-  // canonicalize headers at the transport boundary so the local mock accepts
-  // them. This does not touch how many sessions are opened, which is what we
-  // measure.
-  function canonicalizeHeaders(headers) {
-    const out = {};
-    for (const [k, v] of Object.entries(headers)) {
-      if (k.startsWith(':')) {
-        out[k] = k === ':scheme' ? String(v).replace(/:$/, '') : v;
-      } else {
-        out[k.toLowerCase()] = v;
-      }
-    }
-    return out;
-  }
-
-  // --- monkeypatch http2.connect to redirect FCM -> local server ---
   let redirectedConnects = 0;
   const realConnect = http2.connect.bind(http2);
   http2.connect = (authority, options, listener) => {
-    const auth = String(authority);
-    if (auth.includes('fcm.googleapis.com')) {
+    if (String(authority).includes('fcm.googleapis.com')) {
       redirectedConnects += 1;
       const session = realConnect(
         `https://127.0.0.1:${port}`,
@@ -71,62 +71,87 @@ async function main() {
     return realConnect(authority, options, listener);
   };
 
-  // --- init SDK with a fake credential (no OAuth, no network) ---
-  // firebase-admin v14 removed the legacy namespace, so use the modular API.
-  const { initializeApp } = require('firebase-admin/app');
-  const { getMessaging } = require('firebase-admin/messaging');
-  const app = initializeApp({
-    projectId: 'demo-project',
-    credential: {
-      getAccessToken: async () => ({ access_token: 'fake-token', expires_in: 3600 }),
-    },
-  });
-  const messaging = getMessaging(app);
-
-  const messages = [];
-  for (let i = 0; i < PER_CALL; i += 1) {
-    messages.push({ token: `demo-token-${i}`, notification: { title: 'x', body: 'y' } });
-  }
-
-  console.log(
-    `\nCalling messaging.sendEach() ${CALLS} times, ${PER_CALL} messages each ` +
-    `(${CALLS * PER_CALL} messages total)\n`,
-  );
-
-  let ok = 0;
-  for (let c = 0; c < CALLS; c += 1) {
-    const resp = await messaging.sendEach(messages);
-    ok += resp.successCount;
-  }
-
-  console.log('SDK reported successes :', ok, '/', CALLS * PER_CALL);
-  console.log('http2 sessions opened  :', stats.sessions, '(to the FCM endpoint)');
-  console.log('redirected connects    :', redirectedConnects);
-  console.log('streams (requests) seen:', stats.requests);
-  console.log('max concurrent streams :', stats.maxConcurrentStreams,
-    stats.maxConcurrentStreams <= 1 ? '(run with PROCESSING_MS>0 to observe in-call multiplexing)' : '');
-  console.log(
-    `\nACROSS calls: ${stats.sessions} sessions for ${CALLS} sendEach() calls ` +
-    `= ${(stats.sessions / CALLS).toFixed(2)} session(s) per call` +
-    `${stats.sessions === CALLS ? ' — a new session every call, no reuse across calls.' : '.'}`,
-  );
-  if (stats.maxConcurrentStreams > 1) {
-    console.log(
-      `WITHIN a call: up to ${stats.maxConcurrentStreams} concurrent streams on one session ` +
-      `— requests ARE multiplexed inside a single call.`,
+  try {
+    // firebase-admin v14 removed the legacy namespace, so use the modular API.
+    const { initializeApp, deleteApp } = require('firebase-admin/app');
+    const { getMessaging } = require('firebase-admin/messaging');
+    const app = initializeApp(
+      {
+        projectId: 'demo-project',
+        credential: {
+          getAccessToken: async () => ({ access_token: 'fake-token', expires_in: 3600 }),
+        },
+      },
+      // unique app name so multiple runs in one process don't collide
+      `lvl2-${appSeq += 1}`,
     );
-  }
-  console.log(
-    '\nSo multiplexing works within a call, but the session is torn down after ' +
-    'each call. That is exactly the gap in firebase/firebase-admin-node#2488.\n',
-  );
+    const messaging = getMessaging(app);
 
-  http2.connect = realConnect;
-  await close();
-  process.exit(0);
+    const messages = [];
+    for (let i = 0; i < perCall; i += 1) {
+      messages.push({ token: `demo-token-${i}`, notification: { title: 'x', body: 'y' } });
+    }
+
+    let successes = 0;
+    for (let c = 0; c < calls; c += 1) {
+      const resp = await messaging.sendEach(messages);
+      successes += resp.successCount;
+    }
+
+    await deleteApp(app);
+    return {
+      calls,
+      perCall,
+      successes,
+      sessions: stats.sessions,
+      redirectedConnects,
+      requests: stats.requests,
+      maxConcurrentStreams: stats.maxConcurrentStreams,
+    };
+  } finally {
+    http2.connect = realConnect;
+    await close();
+  }
 }
 
-main().catch(err => {
-  console.error(err);
-  process.exit(1);
-});
+module.exports = { runLevel2, canonicalizeHeaders };
+
+// CLI
+if (require.main === module) {
+  const calls = intEnv('CALLS', 20);
+  const perCall = intEnv('PER_CALL', 50);
+  const processingMs = intEnv('PROCESSING_MS', 0);
+  console.log(
+    `\nCalling messaging.sendEach() ${calls} times, ${perCall} messages each ` +
+    `(${calls * perCall} messages total)\n`,
+  );
+  runLevel2({ calls, perCall, processingMs })
+    .then(r => {
+      console.log('SDK reported successes :', r.successes, '/', calls * perCall);
+      console.log('http2 sessions opened  :', r.sessions, '(to the FCM endpoint)');
+      console.log('redirected connects    :', r.redirectedConnects);
+      console.log('streams (requests) seen:', r.requests);
+      console.log('max concurrent streams :', r.maxConcurrentStreams,
+        r.maxConcurrentStreams <= 1 ? '(run with PROCESSING_MS>0 to observe in-call multiplexing)' : '');
+      console.log(
+        `\nACROSS calls: ${r.sessions} sessions for ${calls} sendEach() calls ` +
+        `= ${(r.sessions / calls).toFixed(2)} session(s) per call` +
+        `${r.sessions === calls ? ' — a new session every call, no reuse across calls.' : '.'}`,
+      );
+      if (r.maxConcurrentStreams > 1) {
+        console.log(
+          `WITHIN a call: up to ${r.maxConcurrentStreams} concurrent streams on one session ` +
+          `— requests ARE multiplexed inside a single call.`,
+        );
+      }
+      console.log(
+        '\nSo multiplexing works within a call, but the session is torn down after ' +
+        'each call. That is exactly the gap in firebase/firebase-admin-node#2488.\n',
+      );
+      process.exit(0);
+    })
+    .catch(err => {
+      console.error(err);
+      process.exit(1);
+    });
+}

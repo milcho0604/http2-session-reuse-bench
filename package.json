@@ -9,6 +9,7 @@
     "node": ">=18"
   },
   "scripts": {
+    "test": "node --test",
     "bench": "node bench.js",
     "server": "node src/server.js",
     "sdk": "node scripts/level2-sdk.js"

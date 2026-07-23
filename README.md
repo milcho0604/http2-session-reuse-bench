@@ -143,6 +143,24 @@ at runtime under `.certs/` (gitignored).
   end-to-end caller number — for the per-call strategy the caller also waits for
   a handshake per batch, which lives in the wall-clock column.
 
+## Tests
+
+```bash
+npm install   # for the level-2 test (firebase-admin); other tests need nothing
+npm test      # node --test
+```
+
+The suite (`node:test`, no framework) asserts the load-bearing claims directly:
+
+- `perCallSession` opens exactly one session per batch; `sharedSession` opens
+  exactly one for the whole run.
+- The real `firebase-admin` `sendEach()` opens one session per call, and
+  multiplexes every message within a call onto that one session.
+- A non-2xx response is counted as a failure, never a success.
+- Percentiles use nearest-rank and never over-index.
+
+The level-2 test is skipped (not failed) if `firebase-admin` isn't installed.
+
 ## Limitations
 
 This is a focused illustration, not a network benchmark. Read the numbers with
