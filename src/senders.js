@@ -45,10 +45,20 @@ function sendOne(session, body) {
       ':path': '/v1/send',
       'content-type': 'application/json',
     });
+    let status = 0;
     let data = '';
+    req.on('response', headers => {
+      status = Number(headers[':status']);
+    });
     req.setEncoding('utf8');
     req.on('data', chunk => (data += chunk));
-    req.on('end', () => resolve(performance.now() - start));
+    req.on('end', () => {
+      if (status !== 200) {
+        reject(new Error(`unexpected status ${status}`));
+        return;
+      }
+      resolve(performance.now() - start);
+    });
     req.on('error', reject);
     req.end(body);
   });

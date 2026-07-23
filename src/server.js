@@ -30,9 +30,11 @@ function createServer({ processingMs = 0 } = {}) {
     if (liveStreams > stats.maxConcurrentStreams) {
       stats.maxConcurrentStreams = liveStreams;
     }
+    stream.on('error', () => {});
 
     const respond = () => {
       liveStreams -= 1;
+      if (stream.destroyed) return;
       stream.respond({
         ':status': 200,
         'content-type': 'application/json',
@@ -40,14 +42,15 @@ function createServer({ processingMs = 0 } = {}) {
       stream.end('{"name":"projects/demo/messages/0"}');
     };
 
-    // Optional server-side processing delay to model backend work. Off by
-    // default so the measured difference is purely connection setup, not
-    // fabricated server latency.
-    if (processingMs > 0) {
-      setTimeout(respond, processingMs);
-    } else {
-      respond();
-    }
+    // Consume the full request body before responding, so upload/flow-control
+    // is part of the request the way a real endpoint would see it. Optional
+    // server-side processing delay models backend work; off by default so the
+    // measured difference is connection setup, not fabricated server latency.
+    stream.resume();
+    stream.on('end', () => {
+      if (processingMs > 0) setTimeout(respond, processingMs);
+      else respond();
+    });
   });
 
   server.on('error', () => {});

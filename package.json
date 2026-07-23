@@ -10,7 +10,8 @@
   },
   "scripts": {
     "bench": "node bench.js",
-    "server": "node src/server.js"
+    "server": "node src/server.js",
+    "sdk": "node scripts/level2-sdk.js"
   },
   "keywords": [
     "http2",
@@ -18,5 +19,8 @@
     "connection-pool",
     "benchmark",
     "fcm"
-  ]
+  ],
+  "devDependencies": {
+    "firebase-admin": "^14.2.0"
+  }
 }

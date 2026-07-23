@@ -28,7 +28,9 @@ function intEnv(name, def) {
 
 function pct(sorted, p) {
   if (sorted.length === 0) return 0;
-  const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
+  // nearest-rank: rank = ceil(p/100 * n), 1-indexed.
+  const rank = Math.ceil((p / 100) * sorted.length);
+  const idx = Math.min(sorted.length, Math.max(1, rank)) - 1;
   return sorted[idx];
 }
 
@@ -103,9 +105,21 @@ async function main() {
 
   printTable([perCall, shared]);
 
+  // Integrity: both strategies must have completed exactly the intended work.
+  const expected = BATCHES * PER_BATCH;
+  const totalSeen = stats.requests;
+  if (perCall.requests !== expected || shared.requests !== expected) {
+    throw new Error(
+      `request-count mismatch: expected ${expected} each, got ` +
+      `per-call=${perCall.requests}, shared=${shared.requests}`,
+    );
+  }
+
+  const fewer = round(perCall.sessions / shared.sessions);
   const speedup = round(perCall.wallMs / shared.wallMs);
   console.log(
-    `\nShared session opened ${perCall.sessions}x fewer connections ` +
+    `\nSame workload both ways (${expected} requests each, ${totalSeen} served). ` +
+    `Shared session opened ${fewer}x fewer connections ` +
     `(${perCall.sessions} -> ${shared.sessions}) and finished ${speedup}x faster ` +
     `on this run.\n`,
   );
