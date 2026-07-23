@@ -1,0 +1,22 @@
+{
+  "name": "http2-session-reuse-bench",
+  "version": "0.1.0",
+  "description": "A reproducible benchmark showing the cost of opening a new HTTP/2 session per batch versus reusing one shared session across batches — the behavior discussed in firebase/firebase-admin-node#2488.",
+  "type": "commonjs",
+  "license": "MIT",
+  "author": "Changhyun Kim",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "bench": "node bench.js",
+    "server": "node src/server.js"
+  },
+  "keywords": [
+    "http2",
+    "session-reuse",
+    "connection-pool",
+    "benchmark",
+    "fcm"
+  ]
+}
